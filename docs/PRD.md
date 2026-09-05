@@ -34,6 +34,9 @@ or sandboxed HTML/CSS.
 4. **Dual Model Layer** — Ollama (local, required for demo) and
 Anthropic/OpenAI (cloud), switchable via env var or request header —
 zero code changes.
+5. **Chat History** — sidebar listing past sessions with delete and resume
+
+&#x20;  (continue an existing conversation with full prior context).
 
 ## Trade-offs
 
@@ -50,19 +53,23 @@ small corpus; HNSW would be preferable at scale (100k+ chunks).
 were trimmed in favor of a working vanilla-JS frontend and a focused test
 set covering retrieval, refusal, and provider switching — the three things
 actually graded.
-* **Model size vs. speed:** started with llama3.1:8b (CPU inference exceeded
+* **Model size vs. speed:** - started with llama3.1:8b for local inference — CPU-only
 
-&#x20;  5 minutes per response — unusable for a live demo). Tested llama3.2:1b
+&#x20;  hardware pushed response times past 5 minutes, unusable for a live demo. Tested
 
-&#x20;  (fast, \~1min, but incoherent answers). Settled on llama3.2:3b as the
+&#x20;  llama3.2:1b (fast, \~1 min, but incoherent answers). Settled on llama3.2:3b as the
 
-&#x20;  right balance — coherent, grounded answers in 6-50s on CPU-only hardware.
+&#x20;  right balance — coherent, grounded answers with citations in roughly 6-50s on
 
-* **Similarity threshold tuning:** nomic-embed-text cosine scores for true
+&#x20;  CPU-only hardware.
 
-&#x20;  matches cluster around 0.4-0.6, not near 1.0. Initial threshold of 0.35
+**Similarity threshold tuning:** - started at 0.35 per the reference spec's implied
 
-&#x20;  caused false refusals on genuinely relevant questions. Tuned down to
+&#x20; strictness. Real testing showed nomic-embed-text cosine scores for genuinely
 
-&#x20;  0.15 empirically by logging real query scores rather than guessing.
+&#x20; relevant matches cluster around 0.4-0.6, not near 1.0 — 0.35 caused false refusals
+
+&#x20; on clearly answerable questions. Tuned down to 0.15 empirically by logging real
+
+&#x20; query scores rather than guessing, verified against 598 chunks across 15 episodes.
 
