@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
 
     # --- Retrieval ---
-    top_k: int = 5
+    top_k: int = 2
     similarity_threshold: float = 0.35  # below this -> "insufficient information"
     chunk_tokens: int = 650
     chunk_overlap_tokens: int = 100

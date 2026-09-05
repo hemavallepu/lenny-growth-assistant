@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -42,7 +42,6 @@ app.add_middleware(
 )
 
 
-# ---------- schemas ----------
 class SessionCreate(BaseModel):
     title: str = "New chat"
     provider: str = settings.llm_provider
@@ -51,11 +50,19 @@ class SessionCreate(BaseModel):
 class ChatRequest(BaseModel):
     session_id: uuid.UUID
     message: str
-    provider: str | None = None  # per-request override, e.g. from a UI toggle
-    mode: str = "qa"  # "qa" | "ship30"
+    provider: str | None = None
+    mode: str = "qa"
 
 
-# ---------- routes ----------
+@app.get("/api/sessions")
+async def list_sessions(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(ChatSession).order_by(ChatSession.created_at.desc()).limit(50)
+    )
+    sessions = result.scalars().all()
+    return [{"id": s.id, "title": s.title, "created_at": s.created_at} for s in sessions]
+
+
 @app.post("/api/sessions")
 async def create_session(body: SessionCreate, db: AsyncSession = Depends(get_db)):
     session = ChatSession(title=body.title, provider=body.provider)
@@ -65,21 +72,33 @@ async def create_session(body: SessionCreate, db: AsyncSession = Depends(get_db)
     return {"id": session.id, "title": session.title, "provider": session.provider}
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(Message).where(Message.session_id == session_id))
+    await db.execute(delete(ChatSession).where(ChatSession.id == session_id))
+    await db.commit()
+    return {"deleted": True}
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_messages(session_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Message).where(Message.session_id == session_id).order_by(Message.created_at)
     )
-    return result.scalars().all()
+    messages = result.scalars().all()
+    return [{"id": m.id, "role": m.role, "content": m.content} for m in messages]
 
 
 @app.post("/api/chat")
 async def chat(body: ChatRequest, db: AsyncSession = Depends(get_db)):
-    """Streams a grounded (or Ship 30/30) response. Retrieval always runs
-    against the transcript archive; `mode` decides how the answer is framed."""
     provider = get_provider(body.provider)
 
     db.add(Message(session_id=body.session_id, role="user", content=body.message))
+
+    session = await db.get(ChatSession, body.session_id)
+    if session and session.title == "New chat":
+        session.title = body.message[:50]
+
     await db.commit()
 
     scored_chunks = await retrieve_chunks(db, provider, body.message)
@@ -130,14 +149,14 @@ async def health(db: AsyncSession = Depends(get_db)):
     checks = {"database": "ok", "ollama": "unknown", "vector_index": "ok"}
     try:
         await db.execute(select(1))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         checks["database"] = f"error: {exc}"
 
     try:
         async with httpx.AsyncClient(timeout=3) as client:
             r = await client.get(f"{settings.ollama_base_url}/api/tags")
             checks["ollama"] = "ok" if r.status_code == 200 else f"error: {r.status_code}"
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         checks["ollama"] = f"unreachable: {exc}"
 
     status = "ok" if all(v == "ok" for v in checks.values()) else "degraded"
