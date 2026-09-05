@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Lenny Growth Assistant</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+  :root { --border:#e5e7eb; --accent:#0f172a; --muted:#64748b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Roboto, sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  header h1 { font-size:15px; margin:0; }
+  .provider-badge { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); cursor:pointer; }
+  main { flex:1; display:flex; min-height:0; }
+  #chat-pane { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #messages { flex:1; overflow-y:auto; padding:16px; }
+  .msg { max-width:75%; margin-bottom:12px; padding:10px 14px; border-radius:10px; white-space:pre-wrap; line-height:1.4; }
+  .msg.user { background:var(--accent); color:#fff; margin-left:auto; }
+  .msg.assistant { background:#f1f5f9; }
+  .cite { font-size:11px; color:var(--muted); }
+  #input-row { display:flex; gap:8px; padding:12px; border-top:1px solid var(--border); }
+  #input-row textarea { flex:1; resize:none; padding:10px; border-radius:8px; border:1px solid var(--border); font-family:inherit; }
+  #input-row button { padding:0 16px; border:none; background:var(--accent); color:#fff; border-radius:8px; cursor:pointer; }
+  #mode-row { display:flex; gap:6px; padding:0 12px 8px; }
+  #mode-row button { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--border); background:#fff; cursor:pointer; }
+  #mode-row button.active { background:var(--accent); color:#fff; }
+  #artifact-pane { width:0; border-left:1px solid var(--border); overflow:hidden; transition:width .2s ease; display:flex; flex-direction:column; }
+  #artifact-pane.open { width:45%; }
+  #artifact-header { display:flex; justify-content:space-between; align-items:center; padding:10px 14px; border-bottom:1px solid var(--border); font-size:13px; }
+  #artifact-body { flex:1; overflow:auto; }
+  #artifact-body iframe { width:100%; height:100%; border:none; }
+  #artifact-body .md-render { padding:16px; }
+  #toggle-artifact { font-size:12px; cursor:pointer; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lenny Growth Assistant</h1>
+  <span id="provider-badge" class="provider-badge">provider: ollama (local)</span>
+</header>
+<main>
+  <section id="chat-pane">
+    <div id="mode-row">
+      <button id="mode-qa" class="active" onclick="setMode('qa')">Grounded Q&amp;A</button>
+      <button id="mode-ship30" onclick="setMode('ship30')">Ship 30/30 Essay</button>
+      <span id="toggle-artifact" onclick="toggleArtifact()" style="margin-left:auto;">Artifact pane ▸</span>
+    </div>
+    <div id="messages"></div>
+    <div id="input-row">
+      <textarea id="input" rows="2" placeholder="Ask about anything from Lenny's Podcast..."></textarea>
+      <button onclick="send()">Send</button>
+    </div>
+  </section>
+  <section id="artifact-pane">
+    <div id="artifact-header">
+      <span id="artifact-title">Artifact</span>
+      <span style="cursor:pointer;color:var(--muted);" onclick="toggleArtifact()">✕</span>
+    </div>
+    <div id="artifact-body"></div>
+  </section>
+</main>
+
+<script>
+const API_BASE = window.LENNY_API_BASE || "http://localhost:8000";
+let sessionId = null;
+let mode = "qa";
+let provider = "ollama";
+
+function setMode(m) {
+  mode = m;
+  document.getElementById("mode-qa").classList.toggle("active", m === "qa");
+  document.getElementById("mode-ship30").classList.toggle("active", m === "ship30");
+}
+
+function toggleArtifact() {
+  document.getElementById("artifact-pane").classList.toggle("open");
+}
+
+document.getElementById("provider-badge").onclick = () => {
+  provider = provider === "ollama" ? "anthropic" : "ollama";
+  document.getElementById("provider-badge").textContent =
+    `provider: ${provider} (${provider === "ollama" ? "local" : "cloud"})`;
+};
+
+async function ensureSession() {
+  if (sessionId) return sessionId;
+  const res = await fetch(`${API_BASE}/api/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title: "New chat", provider }),
+  });
+  const data = await res.json();
+  sessionId = data.id;
+  return sessionId;
+}
+
+function appendMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  document.getElementById("messages").appendChild(div);
+  document.getElementById("messages").scrollTop = 1e9;
+  return div;
+}
+
+// Detects ```artifact:markdown ... ``` or ```artifact:html ... ``` blocks
+function extractArtifact(text) {
+  const match = text.match(/```artifact:(markdown|html)\n([\s\S]*?)```/);
+  if (!match) return null;
+  return { kind: match[1], content: match[2] };
+}
+
+function renderArtifact(artifact) {
+  const pane = document.getElementById("artifact-pane");
+  const body = document.getElementById("artifact-body");
+  pane.classList.add("open");
+  document.getElementById("artifact-title").textContent =
+    artifact.kind === "markdown" ? "Markdown artifact" : "HTML artifact";
+
+  body.innerHTML = "";
+  if (artifact.kind === "markdown") {
+    const div = document.createElement("div");
+    div.className = "md-render";
+    div.innerHTML = DOMPurify.sanitize(marked.parse(artifact.content));
+    body.appendChild(div);
+  } else {
+    // Sandboxed, isolated from parent storage/cookies: no allow-same-origin.
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute("sandbox", "allow-scripts");
+    iframe.srcdoc = DOMPurify.sanitize(artifact.content, { WHOLE_DOCUMENT: true });
+    body.appendChild(iframe);
+  }
+}
+
+async function send() {
+  const input = document.getElementById("input");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+
+  appendMessage("user", text);
+  const assistantDiv = appendMessage("assistant", "");
+
+  const sid = await ensureSession();
+  const res = await fetch(`${API_BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sid, message: text, provider, mode }),
+  });
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let full = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    full += decoder.decode(value, { stream: true });
+    assistantDiv.textContent = full;
+    document.getElementById("messages").scrollTop = 1e9;
+  }
+
+  let artifact = extractArtifact(full);
+if (!artifact && mode === "ship30" && full.length > 200) {
+  artifact = { kind: "markdown", content: full };
+}
+if (artifact) {
+  assistantDiv.textContent = "Response rendered in the artifact pane →";
+  renderArtifact(artifact);
+}
+}
+
+document.getElementById("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+</script>
+</body>
+</html>
