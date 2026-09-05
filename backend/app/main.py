@@ -138,8 +138,12 @@ async def chat(body: ChatRequest, db: AsyncSession = Depends(get_db)):
         finally:
             answer = "".join(full)
             if answer:
-                db.add(Message(session_id=body.session_id, role="assistant", content=answer))
-                await db.commit()
+                try:
+                    db.add(Message(session_id=body.session_id, role="assistant", content=answer))
+                    await db.commit()
+                except Exception:
+                    log.exception("failed to save assistant message (session may have been deleted)")
+                    await db.rollback()
 
     return StreamingResponse(event_stream(), media_type="text/plain")
 
